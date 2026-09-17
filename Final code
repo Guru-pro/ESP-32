@@ -1,0 +1,1432 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <FastLED.h>
+
+// =====================================================
+// MOORTHY SMART SIGN TESTER
+// V1.4 - PIXEL + SECTION DIAGNOSTICS
+// =====================================================
+
+#define LED_PIN       5
+#define MAX_LEDS      500
+#define LED_TYPE      WS2811
+#define COLOR_ORDER   BRG
+
+CRGB leds[MAX_LEDS];
+
+WebServer server(80);
+
+// =====================================================
+// WIFI
+// =====================================================
+
+const char* ssid = "MOORTHY-TESTER";
+const char* password = "12345678";
+
+// =====================================================
+// SETTINGS
+// =====================================================
+
+int ledCount = 21;
+int brightness = 100;
+
+int sectionStart = 1;
+int sectionEnd = 21;
+
+// =====================================================
+// MODES
+// =====================================================
+
+enum Mode {
+
+  MODE_OFF,
+  MODE_SOLID,
+  MODE_CHASE,
+  MODE_RAINBOW,
+  MODE_FIRE,
+  MODE_AUTO,
+  MODE_PIXEL_SCAN,
+  MODE_SECTION
+
+};
+
+Mode currentMode = MODE_OFF;
+
+CRGB currentColor = CRGB::White;
+
+unsigned long lastUpdate = 0;
+unsigned long modeStarted = 0;
+
+int chasePosition = 0;
+uint8_t rainbowHue = 0;
+
+int scanPixel = 0;
+
+bool scanFinished = false;
+
+// =====================================================
+// SETUP
+// =====================================================
+
+void setup() {
+
+  Serial.begin(115200);
+
+  FastLED.addLeds<
+    LED_TYPE,
+    LED_PIN,
+    COLOR_ORDER
+  >(leds, MAX_LEDS);
+
+  FastLED.setBrightness(brightness);
+
+  clearLEDs();
+
+  // WiFi Access Point
+  WiFi.mode(WIFI_AP);
+
+  WiFi.softAP(
+    ssid,
+    password
+  );
+
+  Serial.println();
+  Serial.println("==============================");
+  Serial.println(" MOORTHY SMART SIGN TESTER");
+  Serial.println(" V1.4");
+  Serial.println("==============================");
+
+  Serial.print("WiFi: ");
+  Serial.println(ssid);
+
+  Serial.print("IP: ");
+  Serial.println(WiFi.softAPIP());
+
+  // =================================================
+  // MAIN PAGE
+  // =================================================
+
+  server.on("/", handleRoot);
+
+  // =================================================
+  // COLOURS
+  // =================================================
+
+  server.on("/red", []() {
+
+    setSolid(CRGB::Red);
+
+    server.send(
+      200,
+      "text/plain",
+      "RED"
+    );
+
+  });
+
+  server.on("/green", []() {
+
+    setSolid(CRGB::Green);
+
+    server.send(
+      200,
+      "text/plain",
+      "GREEN"
+    );
+
+  });
+
+  server.on("/blue", []() {
+
+    setSolid(CRGB::Blue);
+
+    server.send(
+      200,
+      "text/plain",
+      "BLUE"
+    );
+
+  });
+
+  server.on("/white", []() {
+
+    setSolid(CRGB::White);
+
+    server.send(
+      200,
+      "text/plain",
+      "WHITE"
+    );
+
+  });
+
+  server.on("/gold", []() {
+
+    setSolid(
+      CRGB(255, 150, 15)
+    );
+
+    server.send(
+      200,
+      "text/plain",
+      "GOLD"
+    );
+
+  });
+
+  // =================================================
+  // OFF
+  // =================================================
+
+  server.on("/off", []() {
+
+    currentMode = MODE_OFF;
+
+    clearLEDs();
+
+    server.send(
+      200,
+      "text/plain",
+      "OFF"
+    );
+
+  });
+
+  // =================================================
+  // EFFECTS
+  // =================================================
+
+  server.on("/chase", []() {
+
+    startMode(MODE_CHASE);
+
+    server.send(
+      200,
+      "text/plain",
+      "CHASE"
+    );
+
+  });
+
+  server.on("/rainbow", []() {
+
+    startMode(MODE_RAINBOW);
+
+    server.send(
+      200,
+      "text/plain",
+      "RAINBOW"
+    );
+
+  });
+
+  server.on("/fire", []() {
+
+    startMode(MODE_FIRE);
+
+    server.send(
+      200,
+      "text/plain",
+      "FIRE"
+    );
+
+  });
+
+  server.on("/auto", []() {
+
+    startMode(MODE_AUTO);
+
+    server.send(
+      200,
+      "text/plain",
+      "AUTO"
+    );
+
+  });
+
+  // =================================================
+  // LED COUNT
+  // =================================================
+
+  server.on("/count", []() {
+
+    if (server.hasArg("value")) {
+
+      ledCount =
+        server.arg("value").toInt();
+
+      if (ledCount < 1)
+        ledCount = 1;
+
+      if (ledCount > MAX_LEDS)
+        ledCount = MAX_LEDS;
+
+      sectionStart = 1;
+      sectionEnd = ledCount;
+
+      currentMode = MODE_OFF;
+
+      clearLEDs();
+    }
+
+    server.send(
+      200,
+      "text/plain",
+      String(ledCount)
+    );
+
+  });
+
+  // =================================================
+  // BRIGHTNESS
+  // =================================================
+
+  server.on("/brightness", []() {
+
+    if (server.hasArg("value")) {
+
+      brightness =
+        server.arg("value").toInt();
+
+      if (brightness < 1)
+        brightness = 1;
+
+      if (brightness > 255)
+        brightness = 255;
+
+      FastLED.setBrightness(
+        brightness
+      );
+
+      FastLED.show();
+    }
+
+    server.send(
+      200,
+      "text/plain",
+      String(brightness)
+    );
+
+  });
+
+  // =================================================
+  // PIXEL SCAN START
+  // =================================================
+
+  server.on("/pixelScan", []() {
+
+    scanPixel = 0;
+
+    scanFinished = false;
+
+    startMode(
+      MODE_PIXEL_SCAN
+    );
+
+    server.send(
+      200,
+      "text/plain",
+      "SCAN STARTED"
+    );
+
+  });
+
+  // =================================================
+  // SECTION TEST
+  // =================================================
+
+  server.on("/section", []() {
+
+    if (
+      server.hasArg("start") &&
+      server.hasArg("end")
+    ) {
+
+      sectionStart =
+        server.arg("start").toInt();
+
+      sectionEnd =
+        server.arg("end").toInt();
+
+      if (sectionStart < 1)
+        sectionStart = 1;
+
+      if (sectionEnd > ledCount)
+        sectionEnd = ledCount;
+
+      if (sectionStart > sectionEnd)
+        sectionStart = sectionEnd;
+
+      startMode(
+        MODE_SECTION
+      );
+    }
+
+    server.send(
+      200,
+      "text/plain",
+      "SECTION TEST"
+    );
+
+  });
+
+  // =================================================
+  // STATUS
+  // =================================================
+
+  server.on("/status", []() {
+
+    String json = "{";
+
+    json += "\"mode\":\"";
+
+    switch (currentMode) {
+
+      case MODE_OFF:
+        json += "OFF";
+        break;
+
+      case MODE_SOLID:
+        json += "SOLID";
+        break;
+
+      case MODE_CHASE:
+        json += "CHASE";
+        break;
+
+      case MODE_RAINBOW:
+        json += "RAINBOW";
+        break;
+
+      case MODE_FIRE:
+        json += "FIRE";
+        break;
+
+      case MODE_AUTO:
+        json += "AUTO TEST";
+        break;
+
+      case MODE_PIXEL_SCAN:
+        json += "PIXEL SCAN";
+        break;
+
+      case MODE_SECTION:
+        json += "SECTION TEST";
+        break;
+    }
+
+    json += "\",";
+
+    json += "\"pixel\":";
+    json += String(scanPixel + 1);
+
+    json += ",";
+
+    json += "\"count\":";
+    json += String(ledCount);
+
+    json += ",";
+
+    json += "\"start\":";
+    json += String(sectionStart);
+
+    json += ",";
+
+    json += "\"end\":";
+    json += String(sectionEnd);
+
+    json += ",";
+
+    json += "\"finished\":";
+
+    json += (
+      scanFinished
+      ? "true"
+      : "false"
+    );
+
+    json += "}";
+
+    server.send(
+      200,
+      "application/json",
+      json
+    );
+
+  });
+
+  server.begin();
+
+}
+
+// =====================================================
+// LOOP
+// =====================================================
+
+void loop() {
+
+  server.handleClient();
+
+  runAnimation();
+
+}
+
+// =====================================================
+// CLEAR
+// =====================================================
+
+void clearLEDs() {
+
+  fill_solid(
+    leds,
+    MAX_LEDS,
+    CRGB::Black
+  );
+
+  FastLED.show();
+
+}
+
+// =====================================================
+// SOLID
+// =====================================================
+
+void setSolid(
+  CRGB color
+) {
+
+  currentMode =
+    MODE_SOLID;
+
+  currentColor =
+    color;
+
+  fill_solid(
+    leds,
+    ledCount,
+    currentColor
+  );
+
+  for (
+    int i = ledCount;
+    i < MAX_LEDS;
+    i++
+  ) {
+
+    leds[i] =
+      CRGB::Black;
+  }
+
+  FastLED.show();
+
+}
+
+// =====================================================
+// START MODE
+// =====================================================
+
+void startMode(
+  Mode newMode
+) {
+
+  currentMode =
+    newMode;
+
+  modeStarted =
+    millis();
+
+  lastUpdate =
+    millis();
+
+  chasePosition = 0;
+
+  rainbowHue = 0;
+
+  clearLEDs();
+
+}
+
+// =====================================================
+// ANIMATION ENGINE
+// =====================================================
+
+void runAnimation() {
+
+  unsigned long now =
+    millis();
+
+  // =================================================
+  // CHASE
+  // =================================================
+
+  if (
+    currentMode ==
+    MODE_CHASE
+  ) {
+
+    if (
+      now - lastUpdate >= 80
+    ) {
+
+      lastUpdate = now;
+
+      fill_solid(
+        leds,
+        ledCount,
+        CRGB::Black
+      );
+
+      leds[
+        chasePosition
+      ] = CRGB::White;
+
+      FastLED.show();
+
+      chasePosition++;
+
+      if (
+        chasePosition >= ledCount
+      ) {
+
+        chasePosition = 0;
+      }
+    }
+  }
+
+  // =================================================
+  // RAINBOW
+  // =================================================
+
+  if (
+    currentMode ==
+    MODE_RAINBOW
+  ) {
+
+    if (
+      now - lastUpdate >= 30
+    ) {
+
+      lastUpdate = now;
+
+      fill_rainbow(
+        leds,
+        ledCount,
+        rainbowHue,
+        7
+      );
+
+      FastLED.show();
+
+      rainbowHue++;
+    }
+  }
+
+  // =================================================
+  // FIRE
+  // =================================================
+
+  if (
+    currentMode ==
+    MODE_FIRE
+  ) {
+
+    if (
+      now - lastUpdate >= 70
+    ) {
+
+      lastUpdate = now;
+
+      for (
+        int i = 0;
+        i < ledCount;
+        i++
+      ) {
+
+        byte heat =
+          random8(
+            80,
+            255
+          );
+
+        leds[i] =
+          CRGB(
+            255,
+            heat / 2,
+            0
+          );
+      }
+
+      FastLED.show();
+    }
+  }
+
+  // =================================================
+  // PIXEL SCAN
+  // =================================================
+
+  if (
+    currentMode ==
+    MODE_PIXEL_SCAN
+  ) {
+
+    if (
+      now - lastUpdate >= 300
+    ) {
+
+      lastUpdate = now;
+
+      fill_solid(
+        leds,
+        MAX_LEDS,
+        CRGB::Black
+      );
+
+      if (
+        scanPixel <
+        ledCount
+      ) {
+
+        leds[
+          scanPixel
+        ] = CRGB::White;
+
+        FastLED.show();
+
+        scanPixel++;
+
+      } else {
+
+        scanFinished = true;
+
+        currentMode =
+          MODE_OFF;
+
+        clearLEDs();
+      }
+    }
+  }
+
+  // =================================================
+  // SECTION TEST
+  // =================================================
+
+  if (
+    currentMode ==
+    MODE_SECTION
+  ) {
+
+    if (
+      now - lastUpdate >= 100
+    ) {
+
+      lastUpdate = now;
+
+      fill_solid(
+        leds,
+        MAX_LEDS,
+        CRGB::Black
+      );
+
+      for (
+        int i =
+          sectionStart - 1;
+
+        i <
+          sectionEnd;
+
+        i++
+      ) {
+
+        leds[i] =
+          CRGB::White;
+      }
+
+      FastLED.show();
+
+    }
+  }
+
+  // =================================================
+  // AUTO TEST
+  // =================================================
+
+  if (
+    currentMode ==
+    MODE_AUTO
+  ) {
+
+    unsigned long elapsed =
+      now - modeStarted;
+
+    if (
+      elapsed < 2000
+    ) {
+
+      fill_solid(
+        leds,
+        ledCount,
+        CRGB::Red
+      );
+
+      FastLED.show();
+
+    }
+
+    else if (
+      elapsed < 4000
+    ) {
+
+      fill_solid(
+        leds,
+        ledCount,
+        CRGB::Green
+      );
+
+      FastLED.show();
+
+    }
+
+    else if (
+      elapsed < 6000
+    ) {
+
+      fill_solid(
+        leds,
+        ledCount,
+        CRGB::Blue
+      );
+
+      FastLED.show();
+
+    }
+
+    else if (
+      elapsed < 8000
+    ) {
+
+      fill_solid(
+        leds,
+        ledCount,
+        CRGB::White
+      );
+
+      FastLED.show();
+
+    }
+
+    else if (
+      elapsed < 10000
+    ) {
+
+      fill_solid(
+        leds,
+        ledCount,
+        CRGB(255,150,15)
+      );
+
+      FastLED.show();
+
+    }
+
+    else if (
+      elapsed < 15000
+    ) {
+
+      if (
+        now - lastUpdate >= 80
+      ) {
+
+        lastUpdate = now;
+
+        fill_solid(
+          leds,
+          ledCount,
+          CRGB::Black
+        );
+
+        leds[
+          chasePosition
+        ] = CRGB::White;
+
+        FastLED.show();
+
+        chasePosition++;
+
+        if (
+          chasePosition >= ledCount
+        )
+          chasePosition = 0;
+      }
+
+    }
+
+    else if (
+      elapsed < 20000
+    ) {
+
+      if (
+        now - lastUpdate >= 30
+      ) {
+
+        lastUpdate = now;
+
+        fill_rainbow(
+          leds,
+          ledCount,
+          rainbowHue,
+          7
+        );
+
+        FastLED.show();
+
+        rainbowHue++;
+      }
+
+    }
+
+    else {
+
+      modeStarted =
+        now;
+
+      chasePosition = 0;
+
+      rainbowHue = 0;
+    }
+  }
+
+}
+
+// =====================================================
+// WEB PAGE
+// =====================================================
+
+void handleRoot() {
+
+  String html = R"rawliteral(
+
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta name="viewport"
+content="width=device-width, initial-scale=1">
+
+<title>
+Moorthy Smart Sign Tester
+</title>
+
+<style>
+
+body {
+
+  font-family: Arial;
+
+  background: #101010;
+
+  color: white;
+
+  text-align: center;
+
+  margin: 0;
+
+  padding: 15px;
+
+}
+
+h1 {
+
+  font-size: 24px;
+
+}
+
+.card {
+
+  background: #1d1d1d;
+
+  padding: 16px;
+
+  margin: 12px 0;
+
+  border-radius: 16px;
+
+}
+
+.status {
+
+  background: #222;
+
+  padding: 12px;
+
+  border-radius: 12px;
+
+}
+
+button {
+
+  width: 43%;
+
+  min-height: 55px;
+
+  margin: 5px;
+
+  border: none;
+
+  border-radius: 12px;
+
+  font-size: 16px;
+
+  font-weight: bold;
+
+}
+
+input {
+
+  width: 90px;
+
+  padding: 10px;
+
+  font-size: 18px;
+
+  text-align: center;
+
+  border-radius: 8px;
+
+  border: none;
+
+}
+
+input[type=range] {
+
+  width: 90%;
+
+}
+
+.red {
+
+  background: #e53935;
+
+  color: white;
+
+}
+
+.green {
+
+  background: #43a047;
+
+  color: white;
+
+}
+
+.blue {
+
+  background: #1976d2;
+
+  color: white;
+
+}
+
+.white {
+
+  background: white;
+
+  color: black;
+
+}
+
+.gold {
+
+  background: #d49a00;
+
+  color: white;
+
+}
+
+.purple {
+
+  background: #673ab7;
+
+  color: white;
+
+}
+
+.teal {
+
+  background: #00897b;
+
+  color: white;
+
+}
+
+.dark {
+
+  background: #333;
+
+  color: white;
+
+}
+
+.diagnostic {
+
+  background: #455a64;
+
+  color: white;
+
+}
+
+#statusText {
+
+  font-size: 18px;
+
+  margin: 12px;
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<h1>
+MOORTHY SMART SIGN TESTER
+</h1>
+
+<div class="status">
+
+🟢 ESP32 CONNECTED
+
+</div>
+
+<div class="card">
+
+<h2>LED SETTINGS</h2>
+
+<p>LED COUNT</p>
+
+<input
+id="count"
+type="number"
+min="1"
+max="500"
+value="21">
+
+<button
+class="dark"
+onclick="setCount()">
+
+SET COUNT
+
+</button>
+
+<p>BRIGHTNESS</p>
+
+<input
+id="brightness"
+type="range"
+min="1"
+max="255"
+value="100"
+oninput="changeBrightness(this.value)">
+
+<p>
+<span id="brightnessValue">
+100
+</span>
+</p>
+
+</div>
+
+<div class="card">
+
+<h2>COLOUR TEST</h2>
+
+<button
+class="red"
+onclick="cmd('/red')">
+
+RED
+
+</button>
+
+<button
+class="green"
+onclick="cmd('/green')">
+
+GREEN
+
+</button>
+
+<button
+class="blue"
+onclick="cmd('/blue')">
+
+BLUE
+
+</button>
+
+<button
+class="white"
+onclick="cmd('/white')">
+
+WHITE
+
+</button>
+
+<button
+class="gold"
+onclick="cmd('/gold')">
+
+ROYAL GOLD
+
+</button>
+
+<button
+class="dark"
+onclick="cmd('/off')">
+
+OFF
+
+</button>
+
+</div>
+
+<div class="card">
+
+<h2>EFFECTS</h2>
+
+<button
+class="purple"
+onclick="cmd('/chase')">
+
+CHASE
+
+</button>
+
+<button
+class="purple"
+onclick="cmd('/rainbow')">
+
+RAINBOW
+
+</button>
+
+<button
+class="purple"
+onclick="cmd('/fire')">
+
+FIRE
+
+</button>
+
+<button
+class="teal"
+onclick="cmd('/auto')">
+
+AUTO TEST
+
+</button>
+
+</div>
+
+<div class="card">
+
+<h2>🔎 DIAGNOSTICS</h2>
+
+<button
+class="diagnostic"
+onclick="pixelScan()">
+
+PIXEL SCAN
+
+</button>
+
+<p>
+
+START PIXEL
+
+<input
+id="sectionStart"
+type="number"
+value="1"
+min="1">
+
+</p>
+
+<p>
+
+END PIXEL
+
+<input
+id="sectionEnd"
+type="number"
+value="21"
+min="1">
+
+</p>
+
+<button
+class="diagnostic"
+onclick="sectionTest()">
+
+TEST SECTION
+
+</button>
+
+<div id="statusText">
+
+READY
+
+</div>
+
+</div>
+
+<script>
+
+function cmd(url) {
+
+  fetch(url);
+
+}
+
+function setCount() {
+
+  let value =
+    document.getElementById(
+      "count"
+    ).value;
+
+  fetch(
+    "/count?value=" + value
+  );
+
+}
+
+function changeBrightness(value) {
+
+  document.getElementById(
+    "brightnessValue"
+  ).innerText = value;
+
+  fetch(
+    "/brightness?value=" + value
+  );
+
+}
+
+function pixelScan() {
+
+  document.getElementById(
+    "statusText"
+  ).innerText =
+    "PIXEL SCAN STARTED";
+
+  fetch(
+    "/pixelScan"
+  );
+
+}
+
+function sectionTest() {
+
+  let start =
+    document.getElementById(
+      "sectionStart"
+    ).value;
+
+  let end =
+    document.getElementById(
+      "sectionEnd"
+    ).value;
+
+  fetch(
+    "/section?start=" +
+    start +
+    "&end=" +
+    end
+  );
+
+}
+
+setInterval(
+
+  function() {
+
+    fetch("/status")
+
+    .then(
+      response =>
+      response.json()
+    )
+
+    .then(
+      data => {
+
+        if (
+          data.mode ==
+          "PIXEL SCAN"
+        ) {
+
+          document.getElementById(
+            "statusText"
+          ).innerText =
+
+            "Testing LED " +
+            data.pixel +
+            " / " +
+            data.count;
+
+        }
+
+        else if (
+          data.mode ==
+          "SECTION TEST"
+        ) {
+
+          document.getElementById(
+            "statusText"
+          ).innerText =
+
+            "Testing LEDs " +
+            data.start +
+            " – " +
+            data.end;
+
+        }
+
+        else {
+
+          document.getElementById(
+            "statusText"
+          ).innerText =
+            data.mode;
+
+        }
+
+      }
+
+    );
+
+  },
+
+  250
+
+);
+
+</script>
+
+</body>
+
+</html>
+
+)rawliteral";
+
+  server.send(
+    200,
+    "text/html",
+    html
+  );
+
+}
